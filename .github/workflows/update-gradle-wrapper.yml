@@ -1,5 +1,6 @@
 permissions:
   contents: read
+  pull-requests: write
 name: Update Gradle Wrapper
 # Needed because dependabot doesn't support updating the gradle wrapper
 # see: https://github.com/dependabot/dependabot-core/issues/2223
