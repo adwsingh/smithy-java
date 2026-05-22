@@ -7,6 +7,7 @@ on:
     branches: [main]
 
 permissions:
+  contents: write
   pull-requests: write
 
 jobs:
@@ -20,6 +21,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref || github.ref }}
       - name: Set up JDK ${{ matrix.java }}
         uses: actions/setup-java@v5
         with:
@@ -39,6 +42,21 @@ jobs:
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           gradle-home-cache-includes: |
             caches
+
+      - name: Run spotlessApply
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: ./gradlew spotlessApply
+
+      - name: Commit formatting changes
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "Auto-format: apply spotless formatting"
+            git push
+          fi
 
       - name: Clean, build and javadoc
         run: ./gradlew clean build javadoc -Plog-tests --stacktrace
