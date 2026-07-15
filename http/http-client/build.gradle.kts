@@ -22,7 +22,7 @@ dependencies {
     jmh(project(":client:client-http"))
 
     jmhServerImplementation("io.netty:netty-all:4.2.16.Final")
-    jmhServerImplementation("org.bouncycastle:bcpkix-jdk18on:1.84")
+    jmhServerImplementation("org.bouncycastle:bcpkix-jdk18on:1.85")
 }
 
 val benchmarkH2cPort = 18081
