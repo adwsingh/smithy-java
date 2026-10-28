@@ -23,9 +23,15 @@ tasks.register<Test>("integ") {
 // Extension for configuring integration test behavior.
 // Projects can opt in to AWS API model tests by adding:
 //   configureIntegTests { awsModelTests = true }
-// Models are only resolved when the `-PawsModelTests` Gradle property is also set.
+// Models are only resolved when the `-PawsModelsTests` Gradle property is also set. They are then added to
+// the `it` classpath and collected in the `awsModels` configuration, which tasks can copy or iterate over.
 interface IntegTestExtension {
     var awsModelTests: Boolean
+}
+
+val awsModels by configurations.creating {
+    description = "AWS API model jars pinned by the aws-api-models BOM; empty unless -PawsModelsTests is set"
+    isCanBeConsumed = false
 }
 
 val configureIntegTests = extensions.create<IntegTestExtension>("configureIntegTests").apply {
@@ -54,6 +60,7 @@ afterEvaluate {
 
     val deps = doc.getElementsByTagName("dependency")
     dependencies.add("itImplementation", dependencies.platform(bomCoords))
+    dependencies.add(awsModels.name, dependencies.platform(bomCoords))
 
     for (i in 0 until deps.length) {
         val dep = deps.item(i) as? Element ?: continue
@@ -62,6 +69,7 @@ afterEvaluate {
 
         if (g == "software.amazon.api.models") {
             dependencies.add("itImplementation", "$g:$a")
+            dependencies.add(awsModels.name, "$g:$a")
         }
     }
 
