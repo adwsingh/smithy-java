@@ -23,7 +23,10 @@ operation Naming {
         innerDeserializer: ShapeSerializer
 
         abc: ABC
+
+        collision: VariantCollision
     }
+
     errors: [
         IllegalArgumentException
     ]
@@ -64,6 +67,17 @@ structure ShapeSerializer {
 structure IllegalArgumentException {}
 
 @private
-structure ABC {
+structure ABC {}
 
+/// The variant record for `farm` is named `FarmMember`, the same as the
+/// structure it targets, so the union must refer to the structure by its
+/// fully qualified name.
+@private
+union VariantCollision {
+    farm: FarmMember
+}
+
+@private
+structure FarmMember {
+    name: String
 }
