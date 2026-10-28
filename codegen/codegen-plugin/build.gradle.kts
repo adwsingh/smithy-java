@@ -1,4 +1,4 @@
-import java.io.Serializable
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 
 plugins {
     id("smithy-java.codegen-plugin-conventions")
@@ -40,7 +40,7 @@ dependencies {
     itImplementation(libs.smithy.aws.traits)
     itImplementation(libs.smithy.rules)
 
-    // Additional deps for AWS model codegen compilation test
+    // Additional deps for compiling the code generated for AWS models (codegenSize task)
     itImplementation(project(":aws:aws-sigv4"))
     itImplementation(project(":aws:aws-auth-api"))
     itImplementation(project(":aws:client:aws-client-core"))
@@ -100,62 +100,105 @@ configureIntegTests {
     awsModelTests = true
 }
 
-val artifactStatsDir = project.layout.buildDirectory.dir("reports/artifact-stats")
+/*
+ * Codegen size and compatibility report
+ * =====================================
+ * Generates client and server code for every AWS API model, compiles it in memory, and measures the client
+ * classes. Services that fail to generate or compile are recorded in the report. The model jars are only
+ * resolved with -PawsModelsTests. Reports are written to build/codegen-size.
+ *
+ *   ./gradlew :codegen:codegen-plugin:codegenSize -PawsModelsTests
+ *       [-PcodegenSizeOnly=ec2,s3] [-PcodegenSizeBaseline=<base report.json>]
+ *       [-PcodegenSizeArgs="--modes client --dump codegen/codegen-plugin/build/codegen-size/dump"]
+ *   ./gradlew :codegen:codegen-plugin:codegenSizeCompare -PcodegenSizeHead=<report.json> [-PcodegenSizeBase=<report.json>]
+ *
+ * codegenSizeCompare writes report.md and status (unchanged, changed, or regression) and fails when a service
+ * compiles on the base but not on the head.
+ */
+val codegenSizeDir = layout.buildDirectory.dir("codegen-size")
+val codegenSizeReport = codegenSizeDir.map { it.file("report.json") }
+val codegenSizeMarkdown = codegenSizeDir.map { it.file("report.md") }
+val codegenSizeStatus = codegenSizeDir.map { it.file("status") }
+val codegenSizeMainClass = "software.amazon.smithy.java.codegen.size.CodegenSize"
+val awsModelsEnabled = providers.gradleProperty("awsModelsTests").isPresent
 
-class PrintArtifactSizeStats(
-    private val statsPath: String,
-) : Action<Task>,
-    Serializable {
-    override fun execute(task: Task) {
-        val statsFile = File(statsPath, "artifact-size-stats.tsv")
-        if (!statsFile.exists()) {
-            return
-        }
+fun codegenSizeProperty(name: String): String? =
+    providers.gradleProperty(name).orNull?.let { rootDir.resolve(it).absolutePath }
 
-        val entries =
-            statsFile
-                .readLines()
-                .filter { it.isNotBlank() }
-                .map { line ->
-                    val (name, size) = line.split('\t')
-                    name to size.toLong()
-                }.sortedBy { it.second }
-
-        if (entries.isEmpty()) {
-            return
-        }
-
-        val total = entries.sumOf { it.second }
-        val avg = total / entries.size
-        val (minName, minSize) = entries.first()
-        val (maxName, maxSize) = entries.last()
-
-        fun humanReadable(bytes: Long): String =
-            when {
-                bytes < 1024 -> "$bytes B"
-                bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
-                else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
-            }
-
-        println()
-        println("========== Compiled Artifact Size Statistics ==========")
-        println("  SDKs processed: ${entries.size}")
-        println("  Average size:   ${humanReadable(avg)} (%,d bytes)".format(avg))
-        println("  Min size:       ${humanReadable(minSize)} (%,d bytes) -> $minName".format(minSize))
-        println("  Max size:       ${humanReadable(maxSize)} (%,d bytes) -> $maxName".format(maxSize))
-        println("  Total:          ${humanReadable(total)} (%,d bytes)".format(total))
-        println("=======================================================")
-        println()
-        println("Top 5 largest SDKs:")
-        for ((name, size) in entries.takeLast(5).reversed()) {
-            println("  %-50s %s".format(name, humanReadable(size)))
-        }
-    }
+val codegenSizeModels by tasks.registering(Sync::class) {
+    description = "Collects the AWS API model jars pinned by the aws-api-models BOM (requires -PawsModelsTests)"
+    // The configuration also resolves the Smithy libraries the model jars depend on; copy the models alone.
+    from(
+        configurations["awsModels"].incoming.artifactView {
+            componentFilter { it is ModuleComponentIdentifier && it.group == "software.amazon.api.models" }
+        }.files,
+    )
+    into(codegenSizeDir.map { it.dir("models") })
 }
 
-tasks.named<Test>("integ") {
-    val statsPath = artifactStatsDir.get().asFile.absolutePath
-    systemProperty("artifactStatsDir", statsPath)
-    outputs.dir(artifactStatsDir)
-    doLast(PrintArtifactSizeStats(statsPath))
+val codegenSize by tasks.registering(JavaExec::class) {
+    description = "Generates, compiles, and measures code for the AWS API models (requires -PawsModelsTests)"
+    group = "verification"
+    classpath = sourceSets["it"].runtimeClasspath
+    mainClass = codegenSizeMainClass
+    maxHeapSize = "6g"
+    // Resolve relative paths in -PcodegenSizeArgs against the repository root like the other properties.
+    workingDir = rootDir
+    inputs.files(codegenSizeModels)
+    outputs.file(codegenSizeReport)
+    // Capture locally so the action does not reference the build script (configuration cache).
+    val enabled = awsModelsEnabled
+    doFirst {
+        if (!enabled) {
+            throw GradleException("Run with -PawsModelsTests to resolve the AWS API models")
+        }
+    }
+    val baseline = codegenSizeProperty("codegenSizeBaseline")
+    args =
+        buildList {
+            add("report")
+            add("--models")
+            add(codegenSizeModels.get().destinationDir.absolutePath)
+            add("--out")
+            add(codegenSizeReport.get().asFile.absolutePath)
+            add("--bom")
+            add(libs.versions.aws.api.models.get())
+            providers.gradleProperty("codegenSizeOnly").orNull?.let {
+                add("--only")
+                add(it)
+            }
+            if (baseline != null) {
+                add("--baseline")
+                add(baseline)
+                add("--markdown")
+                add(codegenSizeMarkdown.get().asFile.absolutePath)
+                add("--status")
+                add(codegenSizeStatus.get().asFile.absolutePath)
+            }
+            providers.gradleProperty("codegenSizeArgs").orNull?.let { addAll(it.trim().split(Regex("\\s+"))) }
+        }
+    inputs.property("args", args)
+}
+
+val codegenSizeCompare by tasks.registering(JavaExec::class) {
+    description = "Writes a Markdown comparison of two codegenSize reports and fails on new incompatibilities"
+    group = "verification"
+    classpath = sourceSets["it"].runtimeClasspath
+    mainClass = codegenSizeMainClass
+    val base = codegenSizeProperty("codegenSizeBase")
+    val head = codegenSizeProperty("codegenSizeHead") ?: codegenSizeReport.get().asFile.absolutePath
+    args =
+        buildList {
+            add("compare")
+            if (base != null) {
+                add(base)
+            }
+            add(head)
+            add("--markdown")
+            add(codegenSizeMarkdown.get().asFile.absolutePath)
+            add("--status")
+            add(codegenSizeStatus.get().asFile.absolutePath)
+        }
+    outputs.files(codegenSizeMarkdown, codegenSizeStatus)
+    outputs.upToDateWhen { false }
 }
