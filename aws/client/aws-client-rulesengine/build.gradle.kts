@@ -26,7 +26,7 @@ dependencies {
     jmhImplementation(project(":aws:client:aws-client-s3"))
 
     s3Model("software.amazon.api.models:s3:1.0.25")
-    lambdaModel("software.amazon.api.models:lambda:1.0.19")
+    lambdaModel("software.amazon.api.models:lambda:1.0.33")
 }
 
 // Add service models to test and JMH classpaths
