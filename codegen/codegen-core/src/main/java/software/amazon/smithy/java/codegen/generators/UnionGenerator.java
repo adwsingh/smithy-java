@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import software.amazon.smithy.codegen.core.Symbol;
 import software.amazon.smithy.codegen.core.SymbolProvider;
 import software.amazon.smithy.codegen.core.directed.ContextualDirective;
 import software.amazon.smithy.codegen.core.directed.GenerateUnionDirective;
@@ -31,6 +32,7 @@ import software.amazon.smithy.model.shapes.ShapeId;
 import software.amazon.smithy.model.shapes.UnionShape;
 import software.amazon.smithy.model.traits.UnitTypeTrait;
 import software.amazon.smithy.utils.SmithyInternalApi;
+import software.amazon.smithy.utils.StringUtils;
 
 @SmithyInternalApi
 public final class UnionGenerator
@@ -44,6 +46,17 @@ public final class UnionGenerator
         }
         var shape = directive.shape();
         directive.context().writerDelegator().useShapeWriter(shape, writer -> {
+            // Variant records are nested in the union, so any other type with the same simple name has to be
+            // fully qualified within this file. Otherwise a member named `farm` that targets a structure named
+            // `FarmMember` would resolve to the variant record `FarmMember` instead of the structure.
+            for (var member : shape.members()) {
+                var variantName = StringUtils.capitalize(directive.symbolProvider().toMemberName(member)) + "Member";
+                writer.addLocallyDefinedSymbol(Symbol.builder()
+                        .name(variantName)
+                        .namespace(directive.symbol().getFullName(), ".")
+                        .putProperty(SymbolProperties.IS_LOCALLY_DEFINED, true)
+                        .build());
+            }
             writer.pushState(new ClassSection(shape));
             var template = """
                     public sealed interface ${shape:T} extends ${serializableStruct:T} {
